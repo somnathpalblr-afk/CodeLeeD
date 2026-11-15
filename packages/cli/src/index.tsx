@@ -13,6 +13,7 @@ function App() {
       gap={2}
     >
       <Header />
+      <statusbar />
     </box>
   );
 }
