@@ -1,16 +1,18 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
+import { Header } from "./components/header";
 
 function App() {
   return (
     <box
       alignItems="center"
       justifyContent="center"
-      flexGrow={1}
+      backgroundColor="#0D0D12"
+      width="100%"
+      height="100%"
+      gap={2}
     >
-      <box alignItems="center" justifyContent="center" flexGrow={1}>
-        <textarea focused />
-      </box>
+      <Header />
     </box>
   );
 }
