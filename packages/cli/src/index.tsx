@@ -1,7 +1,7 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { Header } from "./components/header";
-import { InputBar } from "./components/input-bar";
+import { StatusBar } from "./components/status-bar";
 
 function App() {
   return (
@@ -14,10 +14,8 @@ function App() {
       gap={2}
     >
       <Header />
-      <box>
-      <InputBar />
-      </box>
-      </box>
+      <StatusBar />
+    </box>
   );
 }
 
