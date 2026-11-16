@@ -49,7 +49,7 @@ export function useCommandMenu(): UseCommandMenuReturn {
         return true;
       });
     } else {
-         close();
+    close();
     }
   };
 
@@ -57,7 +57,7 @@ export function useCommandMenu(): UseCommandMenuReturn {
   const resolveCommand = (index: number): Command | undefined => {
     const command = filteredCommands[index];
     if (command) {
-         close();
+    close();
     }
     return command;
   };
