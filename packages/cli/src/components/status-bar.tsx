@@ -1,4 +1,5 @@
 import { TextAttributes } from "@opentui/core";
+import { DEFAULT_CHAT_MODEL_ID } from "@CodeLeeD/shared";
 import { useTheme } from "../providers/theme";
 
 export function StatusBar() {
@@ -9,8 +10,8 @@ export function StatusBar() {
       <text fg={colors.primary}>Build</text>
       <text attributes={TextAttributes.DIM} fg={colors.dimSeparator}>
         ›
-        </text>
-      <text>opus-4-6</text>
+      </text>
+      <text>{DEFAULT_CHAT_MODEL_ID}</text>
     </box>
   );
 }

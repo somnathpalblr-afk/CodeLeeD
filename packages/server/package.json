@@ -11,7 +11,11 @@
   "dependencies": {
     "@CodeLeeD/database": "workspace:*",
     "@CodeLeeD/shared": "workspace:*",
+    "@ai-sdk/anthropic": "^4.0.106",
+    "@ai-sdk/google": "^4.0.122",
+    "@ai-sdk/openai": "^4.0.119",
     "@hono/zod-validator": "^0.9.1",
+    "ai": "^7.0.174",
     "hono": "^4.13.19",
     "zod": "^4.6.7"
   }
