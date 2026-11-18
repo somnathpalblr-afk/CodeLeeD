@@ -20,6 +20,7 @@
     "@CodeLeeD/shared": "workspace:*",
     "@opentui/core": "^0.9.1",
     "@opentui/react": "^0.9.1",
+    "date-fns": "^4.4.0",
     "eventsource-parser": "^4.1.3",
     "hono": "^4.13.19",
     "opentui-spinner": "^0.0.7",

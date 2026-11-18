@@ -8,8 +8,52 @@ import { Mode, MessageStatus } from "@CodeLeeD/database/enums";
 import { type ChatStreamEvent } from "@CodeLeeD/shared";
 import { isSupportedChatModel, resolveChatModel } from "../lib/models";
 
+const MAX_HISTORY_MESSAGES = 40;
+
+const SYSTEM_PROMPTS: Record<Mode, string> = {
+  BUILD:
+    "You are CodeLeeD, a coding assistant in the user's terminal. Help build and change code. Be concise.",
+  PLAN:
+    "You are CodeLeeD, a coding assistant in the user's terminal. Plan the work step by step and do not write full implementations.",
+};
+
+function buildSystemPrompt(mode: Mode) {
+  const today = new Date().toISOString().slice(0, 10);
+  return `${SYSTEM_PROMPTS[mode]}\nToday's date is ${today}.`;
+}
+
+type Turn = { role: "user" | "assistant"; content: string };
+
+// Merge consecutive same-role turns, keep the last N, and start on a user turn.
+function normalizeHistory(turns: Turn[]): Turn[] {
+  const merged: Turn[] = [];
+  for (const turn of turns) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === turn.role) {
+      last.content += `\n\n${turn.content}`;
+    } else {
+      merged.push({ ...turn });
+    }
+  }
+
+  const recent = merged.slice(-MAX_HISTORY_MESSAGES);
+  while (recent[0]?.role === "assistant") recent.shift();
+  return recent;
+}
+
+// A failed database write must not hide the real error from the client.
+async function saveSafely(
+  data: Parameters<typeof db.message.create>[0]["data"],
+) {
+  try {
+    await db.message.create({ data });
+  } catch (err) {
+    console.error("Failed to save message", err);
+  }
+}
+
 const submitSchema = z.object({
-  content: z.string(),
+  content: z.string().min(1),
   mode: z.enum(Mode),
   model: z.string().refine(isSupportedChatModel, "Unsupported model"),
 });
@@ -24,25 +68,31 @@ const activeResumeSessionIds = new Set<string>();
 
 // Strip error messages and empty assistant messages from the conversation
 function buildConversationHistory(
-  messages: { role: "USER" | "ASSISTANT" | "ERROR"; content: string; status: MessageStatus }[],
+  messages: {
+    role: "USER" | "ASSISTANT" | "ERROR";
+    content: string;
+    status: MessageStatus;
+  }[],
 ) {
-  return messages.flatMap((m) => {
-    if (m.role === "ERROR") return [];
-    if (m.role === "ASSISTANT" && m.content.length === 0) return [];
-    return [
-      { 
-        role: m.role === "USER" ? ("user" as const) : ("assistant" as const), 
-        content: m.content
-      },
-    ];
-  });
-};
+  return normalizeHistory(
+    messages.flatMap((m): Turn[] => {
+      if (m.role === "ERROR") return [];
+      if (m.role === "ASSISTANT" && m.content.length === 0) return [];
+      return [
+        {
+          role: m.role === "USER" ? "user" : "assistant",
+          content: m.content,
+        },
+      ];
+    }),
+  );
+}
 
 function getResumableUserMessage(
-  messages: { 
+  messages: {
     role: "USER" | "ASSISTANT" | "ERROR";
     model: string;
-    mode: Mode
+    mode: Mode;
   }[],
 ) {
   const lastMessage = messages[messages.length - 1];
@@ -51,12 +101,12 @@ function getResumableUserMessage(
   }
 
   return lastMessage;
-};
+}
 
 type StreamParams = {
   sessionId: string;
   model: string;
-  history: { role: "user" | "assistant"; content: string }[];
+  history: Turn[];
   mode: Mode;
   abortController: AbortController;
 };
@@ -75,22 +125,21 @@ async function streamAIResponse(
 
     const elapsedMs = Date.now() - startTime;
 
-    await db.message.create({
-      data: {
-        sessionId,
-        role: "ASSISTANT",
-        status: MessageStatus.INTERRUPTED,
-        model,
-        content: fullText,
-        mode,
-        duration: Math.round(elapsedMs / 1000),
-      },
+    await saveSafely({
+      sessionId,
+      role: "ASSISTANT",
+      status: MessageStatus.INTERRUPTED,
+      model,
+      content: fullText,
+      mode,
+      duration: Math.round(elapsedMs / 1000),
     });
   };
 
   try {
     const result = aiStreamText({
       model: resolvedModel.model,
+      system: buildSystemPrompt(mode),
       messages: history,
       abortSignal: abortController.signal,
     });
@@ -143,21 +192,19 @@ async function streamAIResponse(
 
     const message = err instanceof Error ? err.message : String(err);
 
-    await db.message.create({
-      data: {
-        sessionId,
-        role: "ERROR",
-        status: MessageStatus.COMPLETE,
-        model,
-        content: message,
-        mode,
-      },
+    await saveSafely({
+      sessionId,
+      role: "ERROR",
+      status: MessageStatus.COMPLETE,
+      model,
+      content: message,
+      mode,
     });
 
     const errorEvent: ChatStreamEvent = { type: "error", message };
     await stream.writeSSE({ event: "error", data: JSON.stringify(errorEvent) });
   }
-};
+}
 
 const app = new Hono()
   .post("/:sessionId/resume", async (c) => {
@@ -178,15 +225,14 @@ const app = new Hono()
     }
 
     if (!isSupportedChatModel(resumableMessage.model)) {
-      return c.json({ 
-        error: `Session uses unsupported model: ${resumableMessage.model}`
-      }, 409);
+      return c.json(
+        { error: `Session uses unsupported model: ${resumableMessage.model}` },
+        409,
+      );
     }
 
     if (activeResumeSessionIds.has(sessionId)) {
-      return c.json({ 
-        error: "Session already has an active resume"
-      }, 409);
+      return c.json({ error: "Session already has an active resume" }, 409);
     }
 
     activeResumeSessionIds.add(sessionId);
@@ -194,40 +240,35 @@ const app = new Hono()
     const history = buildConversationHistory(session.messages);
     const abortController = new AbortController();
 
-    try {
-      return streamSSE(
-        c,
-        async (stream) => {
-          stream.onAbort(() => {
-            abortController.abort();
-          });
+    return streamSSE(
+      c,
+      async (stream) => {
+        stream.onAbort(() => {
+          abortController.abort();
+        });
 
-          try {
-            await streamAIResponse(stream, {
-              sessionId,
-              model: resumableMessage.model,
-              history,
-              mode: resumableMessage.mode,
-              abortController,
-            });
-          } finally {
-            activeResumeSessionIds.delete(sessionId);
-          }
-        },
-        async (err, stream) => {
-          activeResumeSessionIds.delete(sessionId);
-          const message = err instanceof Error ? err.message : String(err);
-          const errorEvent: ChatStreamEvent = { type: "error", message };
-          await stream.writeSSE({ 
-            event: "error",
-            data: JSON.stringify(errorEvent)
+        try {
+          await streamAIResponse(stream, {
+            sessionId,
+            model: resumableMessage.model,
+            history,
+            mode: resumableMessage.mode,
+            abortController,
           });
-        },
-      );
-    } catch (error) {
-      activeResumeSessionIds.delete(sessionId);
-      throw error;
-    }
+        } finally {
+          activeResumeSessionIds.delete(sessionId);
+        }
+      },
+      async (err, stream) => {
+        activeResumeSessionIds.delete(sessionId);
+        const message = err instanceof Error ? err.message : String(err);
+        const errorEvent: ChatStreamEvent = { type: "error", message };
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify(errorEvent),
+        });
+      },
+    );
   })
   .post("/:sessionId", submitValidator, async (c) => {
     const sessionId = c.req.param("sessionId");
@@ -255,11 +296,11 @@ const app = new Hono()
     });
 
     const history = buildConversationHistory([
-      ...session.messages, // TODO: limit to last 10, 5 messages?
-      { 
-        role: "USER" as const, 
-        content: data.content, 
-        status: MessageStatus.COMPLETE
+      ...session.messages,
+      {
+        role: "USER" as const,
+        content: data.content,
+        status: MessageStatus.COMPLETE,
       },
     ]);
 
@@ -284,7 +325,7 @@ const app = new Hono()
         const message = err instanceof Error ? err.message : String(err);
         const errorEvent: ChatStreamEvent = { type: "error", message };
         await stream.writeSSE({ event: "error", data: JSON.stringify(errorEvent) });
-      }
+      },
     );
   });
 

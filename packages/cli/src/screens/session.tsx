@@ -1,30 +1,37 @@
-import { DEFAULT_CHAT_MODEL_ID, type SupportedChatModelId } from "@CodeLeeD/shared";
-import { useKeyboard } from "@opentui/react";
-import prettyMs from "pretty-ms";
-import type { SupportedChatModelId } from "@CodeLeeD/shared";
 import { useState, useEffect, useMemo } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
+import { useKeyboard } from "@opentui/react";
 import { z } from "zod";
+import prettyMs from "pretty-ms";
 import type { InferResponseType } from "hono/client";
+import {
+  DEFAULT_CHAT_MODEL_ID,
+  findSupportedChatModel,
+  type SupportedChatModelId,
+} from "@CodeLeeD/shared";
+import { MessageStatus } from "@CodeLeeD/database/enums";
 import { SessionShell } from "../components/session-shell";
-import { 
-  UserMessage, 
-  BotMessage, 
-  ErrorMessage
-} from "../components/messages";
+import { UserMessage, BotMessage, ErrorMessage } from "../components/messages";
 import { useToast } from "../providers/toast";
+import { useKeyboardLayer } from "../providers/keyboard-layer";
+import { useChatSettings } from "../providers/chat-settings";
 import { useChat } from "../hooks/use-chat";
-import type { Message, ClientMessagePart } from "../hooks/use-chat";
+import type { Message } from "../hooks/use-chat";
 import { apiClient } from "../lib/api-client";
 import { getErrorMessage } from "../lib/http-errors";
-import { MessageStatus } from "@CodeLeeD/database/enums";
-import { useKeyboardLayer } from "../providers/keyboard-layer";
 
 type SessionData = InferResponseType<(typeof apiClient.sessions)[":id"]["$get"], 200>;
 
 const sessionLocationSchema = z.object({
-  session: z.custom<SessionData>((val) => val != null && typeof val === "object" && "id" in val),
+  session: z.custom<SessionData>(
+    (val) => val != null && typeof val === "object" && "id" in val,
+  ),
 });
+
+// Old rows may hold a model id that is no longer supported.
+function toModelId(id: string): SupportedChatModelId {
+  return findSupportedChatModel(id)?.id ?? DEFAULT_CHAT_MODEL_ID;
+}
 
 function mapDbMessages(dbMessages: SessionData["messages"]): Message[] {
   return dbMessages.map((m): Message => {
@@ -38,7 +45,7 @@ function mapDbMessages(dbMessages: SessionData["messages"]): Message[] {
         role: "user",
         content: m.content,
         mode: m.mode,
-        model: m.model as SupportedChatModelId,
+        model: toModelId(m.model),
       };
     }
 
@@ -46,20 +53,16 @@ function mapDbMessages(dbMessages: SessionData["messages"]): Message[] {
       id: m.id,
       role: "assistant",
       content: m.content,
-      model: m.model as SupportedChatModelId,
+      model: toModelId(m.model),
       mode: m.mode,
       parts: [{ type: "text", text: m.content }],
       ...(m.duration != null ? { duration: prettyMs(m.duration * 1000) } : {}),
       interrupted: m.status === MessageStatus.INTERRUPTED,
     };
   });
-};
+}
 
-function ChatMessage(
-  { msg }: {
-    msg: Message
-  }
-) {
+function ChatMessage({ msg }: { msg: Message }) {
   if (msg.role === "user") {
     return <UserMessage message={msg.content} />;
   }
@@ -78,12 +81,17 @@ function ChatMessage(
       interrupted={msg.interrupted}
     />
   );
-};
+}
 
 function SessionChat({ session }: { session: SessionData }) {
   const [initialMessages] = useState(() => mapDbMessages(session.messages));
   const { isTopLayer } = useKeyboardLayer();
-  const { messages, streaming, submit, abort, interrupt } = useChat(session.id, initialMessages);
+  const { mode, model } = useChatSettings();
+  const { messages, streaming, submit, abort, interrupt } = useChat(
+    session.id,
+    initialMessages,
+  );
+  const isStreaming = streaming.status === "streaming";
 
   // Stop the pending reply when the user leaves this session.
   useEffect(() => {
@@ -92,7 +100,7 @@ function SessionChat({ session }: { session: SessionData }) {
 
   // Let the user cancel a reply even before the first streamed chunk arrives.
   useKeyboard((key) => {
-    if (key.name === "escape" && isTopLayer("base") && streaming.status === "streaming") {
+    if (key.name === "escape" && isTopLayer("base") && isStreaming) {
       key.preventDefault();
       interrupt();
     }
@@ -100,11 +108,8 @@ function SessionChat({ session }: { session: SessionData }) {
 
   return (
     <SessionShell
-      onSubmit={(text) =>
-        submit({ userText: text, mode: "BUILD", model: DEFAULT_CHAT_MODEL_ID })
-      }
-      loading={streaming.status === "streaming"}
-      interruptible={streaming.status === "streaming"}
+      onSubmit={(text) => submit({ userText: text, mode, model })}
+      loading={isStreaming}
     >
       {messages.map((msg) => (
         <ChatMessage key={msg.id} msg={msg} />
@@ -135,8 +140,12 @@ export function Session() {
   const [session, setSession] = useState<SessionData | null>(prefetched);
 
   useEffect(() => {
-    // Skip fetch if session was passed via location state
-    if (prefetched) return;
+    // Use the session passed via location state, and keep it in sync
+    // if the route changes while this component stays mounted.
+    if (prefetched) {
+      setSession(prefetched);
+      return;
+    }
 
     setSession(null);
 
@@ -145,13 +154,10 @@ export function Session() {
     let ignore = false;
     const fetchSession = async () => {
       try {
-        const res = await apiClient.sessions[":id"].$get({ 
-          param: { id },
-        });
+        const res = await apiClient.sessions[":id"].$get({ param: { id } });
         if (ignore) return;
         if (!res.ok) throw new Error(await getErrorMessage(res));
-        const resolved = await res.json();
-        setSession(resolved);
+        setSession(await res.json());
       } catch (err) {
         if (ignore) return;
         toast.show({
@@ -172,5 +178,5 @@ export function Session() {
     return <SessionShell onSubmit={() => {}} inputDisabled loading />;
   }
 
-  return <SessionChat key={session.id} session={session} />
-};
+  return <SessionChat key={session.id} session={session} />;
+}
