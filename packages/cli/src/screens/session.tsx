@@ -1,24 +1,25 @@
 import { useState, useEffect, useMemo } from "react";
 import { useParams, useLocation, useNavigate } from "react-router";
-import { useKeyboard } from "@opentui/react";
 import { z } from "zod";
+import { useKeyboard } from "@opentui/react";
 import prettyMs from "pretty-ms";
-import type { InferResponseType } from "hono/client";
 import {
   DEFAULT_CHAT_MODEL_ID,
   findSupportedChatModel,
+  messagePartsSchema,
   type SupportedChatModelId,
 } from "@CodeLeeD/shared";
-import { MessageStatus } from "@CodeLeeD/database/enums";
+import type { InferResponseType } from "hono/client";
 import { SessionShell } from "../components/session-shell";
 import { UserMessage, BotMessage, ErrorMessage } from "../components/messages";
 import { useToast } from "../providers/toast";
-import { useKeyboardLayer } from "../providers/keyboard-layer";
-import { useChatSettings } from "../providers/chat-settings";
 import { useChat } from "../hooks/use-chat";
-import type { Message } from "../hooks/use-chat";
+import { useChatSettings } from "../providers/chat-settings";
+import type { Message, ClientMessagePart } from "../hooks/use-chat";
 import { apiClient } from "../lib/api-client";
 import { getErrorMessage } from "../lib/http-errors";
+import { MessageStatus } from "@CodeLeeD/database/enums";
+import { useKeyboardLayer } from "../providers/keyboard-layer";
 
 type SessionData = InferResponseType<(typeof apiClient.sessions)[":id"]["$get"], 200>;
 
@@ -49,13 +50,27 @@ function mapDbMessages(dbMessages: SessionData["messages"]): Message[] {
       };
     }
 
+    const parsedParts =
+      m.parts == null ? null : messagePartsSchema.safeParse(m.parts);
+
+    let parts: ClientMessagePart[] = parsedParts?.success
+      ? parsedParts.data.map((p) =>
+          p.type === "tool-call" ? { ...p, status: "done" as const } : p,
+        )
+      : [];
+
+    // Replies saved before tools existed have no parts: show their text.
+    if (parts.length === 0 && m.content.length > 0) {
+      parts = [{ type: "text", text: m.content }];
+    }
+
     return {
       id: m.id,
       role: "assistant",
       content: m.content,
       model: toModelId(m.model),
       mode: m.mode,
-      parts: [{ type: "text", text: m.content }],
+      parts,
       ...(m.duration != null ? { duration: prettyMs(m.duration * 1000) } : {}),
       interrupted: m.status === MessageStatus.INTERRUPTED,
     };
@@ -64,7 +79,7 @@ function mapDbMessages(dbMessages: SessionData["messages"]): Message[] {
 
 function ChatMessage({ msg }: { msg: Message }) {
   if (msg.role === "user") {
-    return <UserMessage message={msg.content} />;
+    return <UserMessage message={msg.content} mode={msg.mode} />;
   }
 
   if (msg.role === "error") {
@@ -85,8 +100,8 @@ function ChatMessage({ msg }: { msg: Message }) {
 
 function SessionChat({ session }: { session: SessionData }) {
   const [initialMessages] = useState(() => mapDbMessages(session.messages));
-  const { isTopLayer } = useKeyboardLayer();
   const { mode, model } = useChatSettings();
+  const { isTopLayer } = useKeyboardLayer();
   const { messages, streaming, submit, abort, interrupt } = useChat(
     session.id,
     initialMessages,

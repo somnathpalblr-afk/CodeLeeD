@@ -58,6 +58,9 @@
         "hono": "^4.13.19",
         "zod": "^4.6.7",
       },
+      "devDependencies": {
+        "@types/bun": "^1.4.4",
+      },
     },
     "packages/shared": {
       "name": "@CodeLeeD/shared",
